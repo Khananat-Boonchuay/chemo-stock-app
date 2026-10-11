@@ -14,17 +14,26 @@ let scannerTargetId = null;
 function gsRun(fnName, ...args) {
   return fetch(API_URL, {
     method: 'POST',
-    // ใช้ text/plain เพื่อให้เบราว์เซอร์ไม่ส่ง CORS preflight (OPTIONS) ซึ่ง Apps Script ไม่รองรับ
     headers: { 'Content-Type': 'text/plain;charset=utf-8' },
     body: JSON.stringify({ action: fnName, args: args })
   })
-    .then(res => res.json())
-    .then(data => {
-      if (data.success) return data.result;
-      throw new Error(data.error || 'เกิดข้อผิดพลาดไม่ทราบสาเหตุ');
+    .catch(() => {
+      throw new Error('เชื่อมต่อเซิร์ฟเวอร์ไม่ได้ (ตรวจสอบอินเทอร์เน็ต หรือค่า API_URL ใน app.js ว่าเป็นลิงก์ /exec ที่ถูกต้อง)');
+    })
+    .then(res => res.text().then(text => ({ status: res.status, text })))
+    .then(({ status, text }) => {
+      const preview = text.replace(/\s+/g, ' ').slice(0, 200);
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch (e) {
+        throw new Error('เซิร์ฟเวอร์ตอบกลับไม่ใช่ JSON (HTTP ' + status + ') เนื้อหา: ' + preview);
+      }
+      if (data && data.success) return data.result;
+      if (data && data.error) throw new Error(data.error);
+      throw new Error('คำตอบจากเซิร์ฟเวอร์ไม่อยู่ในรูปแบบที่คาดไว้: ' + preview);
     });
 }
-
 function toast(msg, isError) {
   const el = document.getElementById('toast');
   el.textContent = msg;
