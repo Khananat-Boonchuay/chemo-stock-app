@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <title>ระบบจัดการสต็อกยาเคมีบำบัด</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+</head>
+<body>
+
+  <!-- ===================== หน้าเข้าสู่ระบบ ===================== -->
+  <div id="login-screen">
+    <div class="login-box">
+      <h1>💊 สต็อกยาเคมีบำบัด</h1>
+      <p>ระบบบันทึกรับเข้า–จ่ายออกยา</p>
+      <div id="error-msg"></div>
+      <label>ชื่อผู้ใช้</label>
+      <input id="login-username" autocapitalize="off">
+      <label>รหัสผ่าน</label>
+      <input id="login-password" type="password">
+      <button class="btn-primary" onclick="doLogin()">เข้าสู่ระบบ</button>
+    </div>
+  </div>
+
+  <!-- ===================== แอปหลัก ===================== -->
+  <div id="app">
+    <header class="topbar">
+      <div class="title">💊 สต็อกยาเคมีบำบัด</div>
+      <div class="user-info" onclick="doLogout()" style="cursor:pointer;" title="แตะเพื่อออกจากระบบ">
+        <span id="hdr-name"></span>
+        <span id="hdr-role"></span>
+        <span style="text-decoration:underline;">ออกจากระบบ</span>
+      </div>
+    </header>
+
+    <!-- ---------- Dashboard ---------- -->
+    <div class="page" id="page-dashboard">
+      <div class="stat-row">
+        <div class="stat-box"><div class="num" id="stat-drugs">-</div><div class="label">รายการยา</div></div>
+        <div class="stat-box"><div class="num" id="stat-units">-</div><div class="label">หน่วยคงเหลือรวม</div></div>
+      </div>
+
+      <div class="card">
+        <h2>⚠️ สต็อกต่ำกว่ากำหนด</h2>
+        <div id="low-stock-list" class="loading">กำลังโหลด...</div>
+      </div>
+
+      <div class="card">
+        <h2>⏳ ใกล้หมดอายุ (30 วัน)</h2>
+        <div id="near-expiry-list" class="loading">กำลังโหลด...</div>
+      </div>
+
+      <div class="card">
+        <h2>🗓️ ใกล้หมดอายุ (ภายใน 6 เดือน)</h2>
+        <div id="near-expiry-6mo-list" class="loading">กำลังโหลด...</div>
+      </div>
+    </div>
+
+    <!-- ---------- รับเข้า ---------- -->
+    <div class="page" id="page-receive">
+      <div class="card">
+        <h2>📥 บันทึกรับยาเข้าสต็อก</h2>
+        <div class="scan-row">
+          <input id="receive-barcode" placeholder="สแกน / พิมพ์บาร์โค้ดหรือรหัสยา" autofocus>
+          <button onclick="openScanner('receive-barcode')">📷</button>
+        </div>
+        <div id="receive-drug-info"></div>
+
+        <div id="receive-form" class="hidden">
+          <label>เลข Lot</label>
+          <input id="receive-lot">
+          <label>วันหมดอายุ</label>
+          <input id="receive-expiry" type="date">
+          <label>จำนวนที่รับเข้า</label>
+          <input id="receive-qty" type="number" min="1" inputmode="numeric">
+          <label>หมายเหตุ (ถ้ามี)</label>
+          <input id="receive-note">
+          <button class="btn-primary" onclick="submitReceive()">บันทึกรับเข้า</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ---------- จ่ายออก ---------- -->
+    <div class="page" id="page-dispense">
+      <div class="card">
+        <h2>📤 บันทึกจ่ายยาออก</h2>
+        <div class="scan-row">
+          <input id="dispense-barcode" placeholder="สแกน / พิมพ์บาร์โค้ดหรือรหัสยา">
+          <button onclick="openScanner('dispense-barcode')">📷</button>
+        </div>
+        <div id="dispense-drug-info"></div>
+
+        <div id="dispense-form" class="hidden">
+          <div class="section-title">เลือก Lot (เรียงตามวันหมดอายุก่อน–หลัง)</div>
+          <div id="dispense-lot-list"></div>
+          <label>จำนวนที่จ่าย</label>
+          <input id="dispense-qty" type="number" min="1" inputmode="numeric">
+          <label>อ้างอิงผู้ป่วย / HN (ถ้ามี)</label>
+          <input id="dispense-patient">
+          <label>หมายเหตุ (ถ้ามี)</label>
+          <input id="dispense-note">
+          <button class="btn-primary" onclick="submitDispense()">บันทึกจ่ายออก</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ---------- รายการยา ---------- -->
+    <div class="page" id="page-drugs">
+      <div class="card">
+        <div class="flex-between">
+          <h2>📋 รายการยาทั้งหมด</h2>
+          <button class="btn-small btn-primary" id="btn-add-drug" onclick="openDrugForm()">+ เพิ่มยา</button>
+        </div>
+        <select id="drug-category-filter" onchange="renderDrugList()" style="width:auto;margin-bottom:10px;">
+          <option value="">ทุกหมวดหมู่</option>
+          <option value="ยาเคมีบำบัด (Chemotherapy)">ยาเคมีบำบัด (Chemotherapy)</option>
+          <option value="ยามุ่งเป้า (Targeted therapy)">ยามุ่งเป้า (Targeted therapy)</option>
+          <option value="ยาภูมิคุ้มกันบำบัด (Immunotherapy)">ยาภูมิคุ้มกันบำบัด (Immunotherapy)</option>
+          <option value="ยาอื่นๆ (ไม่ใช่ยาเคมีบำบัด)">ยาอื่นๆ (ไม่ใช่ยาเคมีบำบัด)</option>
+        </select>
+        <div id="drug-list" class="loading">กำลังโหลด...</div>
+      </div>
+
+      <div class="card hidden" id="drug-form-card">
+        <h2 id="drug-form-title">เพิ่มยาใหม่</h2>
+        <label>รหัสยา (DrugCode) *ไม่สามารถแก้ไขภายหลัง</label>
+        <input id="drug-code">
+        <label>บาร์โค้ดบนกล่องยา</label>
+        <input id="drug-barcode">
+        <label>ชื่อยา</label>
+        <input id="drug-name">
+        <label>หน่วยนับ (เช่น vial, amp, tab)</label>
+        <input id="drug-unit">
+        <label>สต็อกขั้นต่ำ (แจ้งเตือนเมื่อต่ำกว่านี้)</label>
+        <input id="drug-min" type="number" min="0">
+        <label>หมวดหมู่ยา</label>
+        <select id="drug-category">
+          <option value="">-- เลือกหมวดหมู่ --</option>
+          <option value="ยาเคมีบำบัด (Chemotherapy)">ยาเคมีบำบัด (Chemotherapy)</option>
+          <option value="ยามุ่งเป้า (Targeted therapy)">ยามุ่งเป้า (Targeted therapy)</option>
+          <option value="ยาภูมิคุ้มกันบำบัด (Immunotherapy)">ยาภูมิคุ้มกันบำบัด (Immunotherapy)</option>
+          <option value="ยาอื่นๆ (ไม่ใช่ยาเคมีบำบัด)">ยาอื่นๆ (ไม่ใช่ยาเคมีบำบัด)</option>
+        </select>
+        <button class="btn-primary" onclick="submitDrug()">บันทึก</button>
+        <button class="btn-secondary" onclick="closeDrugForm()" style="margin-top:8px;">ยกเลิก</button>
+      </div>
+    </div>
+
+    <!-- ---------- รายงาน ---------- -->
+    <div class="page" id="page-reports">
+      <div class="card">
+        <div class="flex-between">
+          <h2>📊 ประวัติการทำรายการ</h2>
+          <select id="report-filter" onchange="loadTransactions()" style="width:auto;margin:0;">
+            <option value="">ทั้งหมด</option>
+            <option value="RECEIVE">รับเข้าเท่านั้น</option>
+            <option value="DISPENSE">จ่ายออกเท่านั้น</option>
+          </select>
+        </div>
+        <div id="tx-list" class="loading">กำลังโหลด...</div>
+      </div>
+    </div>
+
+    <!-- ---------- ผู้ใช้งาน (admin) ---------- -->
+    <div class="page" id="page-users">
+      <div id="admin-only-section" class="hidden">
+        <div class="card">
+          <div class="flex-between">
+            <h2>👤 จัดการผู้ใช้งาน</h2>
+            <button class="btn-small btn-primary" onclick="openUserForm()">+ เพิ่มผู้ใช้</button>
+          </div>
+          <div id="user-list" class="loading">กำลังโหลด...</div>
+        </div>
+
+        <div class="card hidden" id="user-form-card">
+          <h2 id="user-form-title">เพิ่มผู้ใช้ใหม่</h2>
+          <label>ชื่อผู้ใช้ (username) *ไม่สามารถแก้ไขภายหลัง</label>
+          <input id="user-username">
+          <label>ชื่อ-นามสกุล</label>
+          <input id="user-fullname">
+          <label>สิทธิ์การใช้งาน</label>
+          <select id="user-role">
+            <option value="PHARMACIST">เภสัชกร (จัดการยา + รับ/จ่าย)</option>
+            <option value="PHARMACY_TECH">เจ้าพนักงานเภสัชกรรม (รับ/จ่ายเท่านั้น)</option>
+            <option value="STAFF">เจ้าหน้าที่ (รับ/จ่ายเท่านั้น)</option>
+            <option value="ADMIN">ผู้ดูแลระบบ</option>
+          </select>
+          <label>รหัสผ่าน (เว้นว่างหากไม่เปลี่ยน)</label>
+          <input id="user-password" type="password">
+          <label style="display:flex;align-items:center;gap:8px;"><input type="checkbox" id="user-active" style="width:auto;margin:0;" checked> เปิดใช้งานบัญชีนี้</label>
+          <button class="btn-primary" onclick="submitUser()">บันทึก</button>
+          <button class="btn-secondary" onclick="closeUserForm()" style="margin-top:8px;">ยกเลิก</button>
+        </div>
+
+        <div class="card">
+          <h2>🔔 ตั้งค่าอีเมลแจ้งเตือน</h2>
+          <p class="muted">ระบบจะส่งอีเมลสรุปทุกเช้า (07:00 น.) เมื่อมีสต็อกต่ำกว่ากำหนด หรือยาใกล้หมดอายุภายใน 30 วัน</p>
+          <label>อีเมลผู้รับ (คั่นด้วยจุลภาคหากมีหลายคน)</label>
+          <input id="alert-emails" placeholder="pharmacy@hospital.go.th, ...">
+          <button class="btn-primary" onclick="saveAlertEmails()">บันทึก</button>
+          <button class="btn-secondary" onclick="testAlert()" style="margin-top:8px;">ทดสอบส่งอีเมลตอนนี้</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>🔑 เปลี่ยนรหัสผ่านของฉัน</h2>
+        <label>รหัสผ่านเดิม</label>
+        <input id="own-old-pw" type="password">
+        <label>รหัสผ่านใหม่</label>
+        <input id="own-new-pw" type="password">
+        <button class="btn-primary" onclick="submitChangeOwnPassword()">เปลี่ยนรหัสผ่าน</button>
+      </div>
+    </div>
+
+    <nav class="bottom-nav" id="bottom-nav">
+      <button data-page="dashboard" onclick="showPage('dashboard')"><span class="icon">🏠</span>หน้าหลัก</button>
+      <button data-page="receive" onclick="showPage('receive')"><span class="icon">📥</span>รับเข้า</button>
+      <button data-page="dispense" onclick="showPage('dispense')"><span class="icon">📤</span>จ่ายออก</button>
+      <button data-page="drugs" onclick="showPage('drugs')"><span class="icon">📋</span>รายการยา</button>
+      <button data-page="reports" onclick="showPage('reports')"><span class="icon">📊</span>รายงาน</button>
+      <button data-page="users" id="nav-users" onclick="showPage('users')"><span class="icon">⚙️</span>ตั้งค่า</button>
+    </nav>
+  </div>
+
+  <!-- ---------- Modal สแกนกล้อง ---------- -->
+  <div id="scanner-modal">
+    <div class="modal-inner">
+      <div id="reader"></div>
+      <button class="close-modal" onclick="closeScanner()">ปิดกล้อง</button>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
