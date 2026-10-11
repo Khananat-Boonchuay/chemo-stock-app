@@ -156,12 +156,43 @@
       <div class="card">
         <div class="flex-between">
           <h2>📊 ประวัติการทำรายการ</h2>
-          <select id="report-filter" onchange="loadTransactions()" style="width:auto;margin:0;">
-            <option value="">ทั้งหมด</option>
-            <option value="RECEIVE">รับเข้าเท่านั้น</option>
-            <option value="DISPENSE">จ่ายออกเท่านั้น</option>
-          </select>
+          <button class="btn-small btn-secondary" onclick="resetReportFilters()">ล้างตัวกรอง</button>
         </div>
+
+        <label for="report-drug">ยา</label>
+        <select id="report-drug" onchange="loadTransactions()">
+          <option value="">ยาทั้งหมด</option>
+        </select>
+
+        <label for="report-filter">ประเภทรายการ</label>
+        <select id="report-filter" onchange="loadTransactions()">
+          <option value="">ทั้งหมด (รับเข้า + จ่ายออก)</option>
+          <option value="RECEIVE">รับเข้าเท่านั้น</option>
+          <option value="DISPENSE">จ่ายออกเท่านั้น</option>
+        </select>
+
+        <label for="report-period">ช่วงเวลา</label>
+        <select id="report-period" onchange="onReportPeriodChange()">
+          <option value="all">ทั้งหมด</option>
+          <option value="today">วันนี้</option>
+          <option value="7d">7 วันล่าสุด</option>
+          <option value="30d">30 วันล่าสุด</option>
+          <option value="month">เดือนนี้</option>
+          <option value="custom">กำหนดเอง</option>
+        </select>
+
+        <div id="report-custom-range" class="hidden" style="display:flex;gap:8px;">
+          <div style="flex:1;">
+            <label for="report-from">ตั้งแต่วันที่</label>
+            <input type="date" id="report-from" onchange="loadTransactions()">
+          </div>
+          <div style="flex:1;">
+            <label for="report-to">ถึงวันที่</label>
+            <input type="date" id="report-to" onchange="loadTransactions()">
+          </div>
+        </div>
+
+        <div id="report-summary" class="muted" style="margin-bottom:8px;"></div>
         <div id="tx-list" class="loading">กำลังโหลด...</div>
       </div>
     </div>

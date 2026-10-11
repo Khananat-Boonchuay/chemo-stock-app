@@ -1,6 +1,6 @@
 /* ============================ ตั้งค่า URL ของ Apps Script API ============================ */
 // นำ URL เว็บแอปที่ได้จากการ Deploy Apps Script (ลงท้ายด้วย /exec) มาใส่ตรงนี้
-const API_URL = 'https://script.google.com/macros/s/AKfycbzr4Ij0kx0IeeUQjQ7B_Edsd5JdUAih6YEQL7en6hmqoIvBG0OdVv7_iKX6-YeSYGvb/exec';
+const API_URL = 'https://script.google.com/macros/s/XXXXXXXXXXXXXXXXXXXX/exec';
 
 /* ============================ STATE & HELPERS ============================ */
 let TOKEN = sessionStorage.getItem('token') || null;
@@ -126,7 +126,7 @@ function showPage(name) {
 
   if (name === 'dashboard') loadDashboard();
   if (name === 'drugs') loadDrugList();
-  if (name === 'reports') loadTransactions();
+  if (name === 'reports') { loadReportDrugs(); loadTransactions(); }
   if (name === 'users') {
     if (ROLE === 'ADMIN') { loadUsers(); loadAlertEmailsField(); }
   }
@@ -486,21 +486,117 @@ function submitDrug() {
 
 /* ============================== รายงาน ============================== */
 
+const REPORT_LIMIT = 500; // ต้องตรงกับจำนวนสูงสุดที่ getTransactions ใน Code.gs ส่งกลับ
+let reportDrugMap = {};   // drugCode -> ข้อมูลยา (ใช้แสดงหน่วยในสรุป)
+let reportReqSeq = 0;     // กันผลลัพธ์เก่าทับผลลัพธ์ใหม่เมื่อเปลี่ยนตัวกรองเร็วๆ
+
+// เติมรายชื่อยาใน dropdown (จัดกลุ่มตามหมวดหมู่) โดยคงค่าที่เลือกไว้เดิม
+function loadReportDrugs() {
+  gsRun('getDrugList', TOKEN).then(drugs => {
+    const sel = document.getElementById('report-drug');
+    const current = sel.value;
+    reportDrugMap = {};
+    drugs.forEach(d => { reportDrugMap[d.drugCode] = d; });
+    sel.innerHTML = '<option value="">ยาทั้งหมด</option>' +
+      groupByCategory(drugs).map(g =>
+        '<optgroup label="' + esc(g.label) + '">' +
+        g.items.map(d => '<option value="' + esc(d.drugCode) + '">' + esc(d.drugName) + ' (' + esc(d.drugCode) + ')</option>').join('') +
+        '</optgroup>'
+      ).join('');
+    sel.value = reportDrugMap[current] ? current : '';
+  }).catch(err => toast(err.message, true));
+}
+
+// คำนวณช่วงเวลาที่เลือก (ตามเวลาท้องถิ่นของผู้ใช้) — null = ไม่จำกัด
+function getReportRange() {
+  const period = document.getElementById('report-period').value;
+  const now = new Date();
+  const y = now.getFullYear(), m = now.getMonth(), d = now.getDate();
+  let from = null, to = null;
+  if (period === 'today') from = new Date(y, m, d);
+  else if (period === '7d') from = new Date(y, m, d - 6);
+  else if (period === '30d') from = new Date(y, m, d - 29);
+  else if (period === 'month') from = new Date(y, m, 1);
+  else if (period === 'custom') {
+    const f = document.getElementById('report-from').value;
+    const t = document.getElementById('report-to').value;
+    if (f) from = new Date(f + 'T00:00:00');
+    if (t) to = new Date(t + 'T23:59:59.999');
+  }
+  return { from, to };
+}
+
+function onReportPeriodChange() {
+  const isCustom = document.getElementById('report-period').value === 'custom';
+  document.getElementById('report-custom-range').classList.toggle('hidden', !isCustom);
+  const hasDates = document.getElementById('report-from').value || document.getElementById('report-to').value;
+  // เลือก "กำหนดเอง" ครั้งแรกให้รอผู้ใช้เลือกวันที่ก่อนค่อยโหลด
+  if (!isCustom || hasDates) loadTransactions();
+}
+
+function resetReportFilters() {
+  document.getElementById('report-drug').value = '';
+  document.getElementById('report-filter').value = '';
+  document.getElementById('report-period').value = 'all';
+  document.getElementById('report-from').value = '';
+  document.getElementById('report-to').value = '';
+  document.getElementById('report-custom-range').classList.add('hidden');
+  loadTransactions();
+}
+
+function renderReportSummary(rows, drugCode) {
+  const el = document.getElementById('report-summary');
+  if (rows.length >= REPORT_LIMIT) {
+    el.textContent = 'แสดง ' + REPORT_LIMIT + ' รายการล่าสุด (อาจมีรายการเก่ากว่านี้อีก) — กรุณาจำกัดช่วงเวลาหรือเลือกยาเพื่อดูให้ครบ';
+    return;
+  }
+  let text = 'พบ ' + rows.length + ' รายการ';
+  if (drugCode && rows.length > 0) {
+    // รวมจำนวนเฉพาะเมื่อเลือกยาชนิดเดียว (หน่วยเดียวกัน) และข้อมูลไม่ถูกตัด
+    const sum = { RECEIVE: 0, DISPENSE: 0 };
+    rows.forEach(r => { sum[r.type] = (sum[r.type] || 0) + Number(r.qty || 0); });
+    const unit = (reportDrugMap[drugCode] && reportDrugMap[drugCode].unit) || '';
+    text += ' · รับเข้ารวม ' + sum.RECEIVE + ' ' + unit + ' · จ่ายออกรวม ' + sum.DISPENSE + ' ' + unit;
+  }
+  el.textContent = text;
+}
+
 function loadTransactions() {
+  const drugCode = document.getElementById('report-drug').value;
   const type = document.getElementById('report-filter').value;
-  gsRun('getTransactions', TOKEN, { type }).then(rows => {
-    const el = document.getElementById('tx-list');
-    if (rows.length === 0) { el.innerHTML = '<p class="muted">ไม่มีรายการ</p>'; return; }
+  const { from, to } = getReportRange();
+  if (from && to && from > to) { toast('วันที่เริ่มต้นต้องไม่เกินวันที่สิ้นสุด', true); return; }
+
+  const filters = { type, drugCode };
+  if (from) filters.dateFrom = from.toISOString();
+  if (to) filters.dateTo = to.toISOString();
+
+  const seq = ++reportReqSeq;
+  const el = document.getElementById('tx-list');
+  document.getElementById('report-summary').textContent = '';
+  el.className = 'loading';
+  el.innerHTML = 'กำลังโหลด...';
+
+  gsRun('getTransactions', TOKEN, filters).then(rows => {
+    if (seq !== reportReqSeq) return; // มีการเปลี่ยนตัวกรองใหม่แล้ว ทิ้งผลเก่า
+    el.className = '';
+    renderReportSummary(rows, drugCode);
+    if (rows.length === 0) { el.innerHTML = '<p class="muted">ไม่พบรายการตามเงื่อนไขที่เลือก</p>'; return; }
     el.innerHTML = `<table><thead><tr><th>วันที่</th><th>ประเภท</th><th>ยา</th><th>Lot</th><th>จำนวน</th><th>โดย</th></tr></thead><tbody>` +
       rows.map(r => `<tr>
         <td>${fmtDateTime(r.timestamp)}</td>
         <td><span class="tag ${r.type === 'RECEIVE' ? 'receive' : 'dispense'}">${r.type === 'RECEIVE' ? 'รับเข้า' : 'จ่ายออก'}</span></td>
-        <td>${r.drugName}</td>
-        <td>${r.lotNumber}</td>
-        <td>${r.qty}</td>
-        <td>${r.user}</td>
+        <td>${esc(r.drugName)}</td>
+        <td>${esc(r.lotNumber)}</td>
+        <td>${esc(r.qty)}</td>
+        <td>${esc(r.user)}</td>
       </tr>`).join('') + `</tbody></table>`;
-  }).catch(err => toast(err.message, true));
+  }).catch(err => {
+    if (seq !== reportReqSeq) return;
+    el.className = '';
+    el.innerHTML = '';
+    toast(err.message, true);
+  });
 }
 
 /* ============================== ผู้ใช้งาน (admin) ============================== */
