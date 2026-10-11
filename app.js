@@ -1,6 +1,6 @@
 /* ============================ ตั้งค่า URL ของ Apps Script API ============================ */
 // นำ URL เว็บแอปที่ได้จากการ Deploy Apps Script (ลงท้ายด้วย /exec) มาใส่ตรงนี้
-const API_URL = 'https://script.google.com/macros/s/XXXXXXXXXXXXXXXXXXXX/exec';
+const API_URL = 'https://script.google.com/macros/s/AKfycbzr4Ij0kx0IeeUQjQ7B_Edsd5JdUAih6YEQL7en6hmqoIvBG0OdVv7_iKX6-YeSYGvb/exec';
 
 /* ============================ STATE & HELPERS ============================ */
 let TOKEN = sessionStorage.getItem('token') || null;
