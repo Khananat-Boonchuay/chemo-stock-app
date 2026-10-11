@@ -1,6 +1,6 @@
 /* ============================ ตั้งค่า URL ของ Apps Script API ============================ */
 // นำ URL เว็บแอปที่ได้จากการ Deploy Apps Script (ลงท้ายด้วย /exec) มาใส่ตรงนี้
-const API_URL = 'https://script.google.com/macros/s/AKfycbzr4Ij0kx0IeeUQjQ7B_Edsd5JdUAih6YEQL7en6hmqoIvBG0OdVv7_iKX6-YeSYGvb/exec';
+const API_URL = 'https://script.google.com/macros/s/XXXXXXXXXXXXXXXXXXXX/exec';
 
 /* ============================ STATE & HELPERS ============================ */
 let TOKEN = sessionStorage.getItem('token') || null;
@@ -14,6 +14,7 @@ let scannerTargetId = null;
 function gsRun(fnName, ...args) {
   return fetch(API_URL, {
     method: 'POST',
+    // ใช้ text/plain เพื่อให้เบราว์เซอร์ไม่ส่ง CORS preflight (OPTIONS) ซึ่ง Apps Script ไม่รองรับ
     headers: { 'Content-Type': 'text/plain;charset=utf-8' },
     body: JSON.stringify({ action: fnName, args: args })
   })
@@ -34,6 +35,7 @@ function gsRun(fnName, ...args) {
       throw new Error('คำตอบจากเซิร์ฟเวอร์ไม่อยู่ในรูปแบบที่คาดไว้: ' + preview);
     });
 }
+
 function toast(msg, isError) {
   const el = document.getElementById('toast');
   el.textContent = msg;
@@ -134,25 +136,94 @@ function showPage(name) {
 
 /* ============================== DASHBOARD ============================== */
 
+// หมวดหมู่ตามลำดับที่แสดงบนหน้าหลัก
+// key = ชื่อภาษาไทยก่อนวงเล็บ (ตรงกับตัวเลือกใน dropdown หมวดหมู่ของหน้ารายการยา)
+const CATEGORY_GROUPS = [
+  { key: 'ยาเคมีบำบัด', label: 'ยาเคมีบำบัด' },
+  { key: 'ยามุ่งเป้า', label: 'ยามุ่งเป้า' },
+  { key: 'ยาภูมิคุ้มกันบำบัด', label: 'ยาภูมิคุ้มกันบำบัด' },
+  { key: 'ยาอื่นๆ', label: 'ยาอื่นๆ' },
+  { key: 'สารน้ำ', label: 'สารน้ำ' },
+  { key: 'เวชภัณฑ์มิใช่ยา', label: 'เวชภัณฑ์มิใช่ยา' }
+];
+const CATEGORY_NONE_LABEL = 'ไม่ระบุหมวดหมู่';
+// กล่องตัวเลขจำนวนรายการยา แสดง 4 กลุ่มแรก
+const COUNT_GROUP_KEYS = ['ยาเคมีบำบัด', 'ยามุ่งเป้า', 'ยาภูมิคุ้มกันบำบัด', 'ยาอื่นๆ'];
+
+function esc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+// แปลงค่าหมวดหมู่ในชีต (เช่น "ยาเคมีบำบัด (Chemotherapy)") เป็น key ภาษาไทยสั้นๆ
+// ถ้าว่างหรือไม่รู้จัก จะคืนค่า '' (= ไม่ระบุหมวดหมู่)
+function categoryKey(raw) {
+  const k = String(raw || '').replace(/\s*\(.*$/, '').trim();
+  return CATEGORY_GROUPS.some(g => g.key === k) ? k : '';
+}
+
+// จัดกลุ่มรายการตามหมวดหมู่ ตามลำดับใน CATEGORY_GROUPS (แสดงเฉพาะกลุ่มที่มีรายการ)
+function groupByCategory(items) {
+  const buckets = {};
+  items.forEach(d => {
+    const k = categoryKey(d.category);
+    (buckets[k] = buckets[k] || []).push(d);
+  });
+  const groups = [];
+  CATEGORY_GROUPS.forEach(g => {
+    if (buckets[g.key]) groups.push({ label: g.label, items: buckets[g.key] });
+  });
+  if (buckets['']) groups.push({ label: CATEGORY_NONE_LABEL, items: buckets[''] });
+  return groups;
+}
+
+function renderGroupedList(elId, items, emptyMsg, itemHtml) {
+  const el = document.getElementById(elId);
+  el.className = '';
+  if (items.length === 0) {
+    el.innerHTML = '<p class="muted">' + emptyMsg + '</p>';
+    return;
+  }
+  el.innerHTML = groupByCategory(items).map((g, i) =>
+    '<div class="section-title"' + (i === 0 ? ' style="margin-top:4px;"' : '') + '>' +
+      esc(g.label) + ' (' + g.items.length + ')</div>' +
+    g.items.map(itemHtml).join('')
+  ).join('');
+}
+
+function renderCategoryCounts(counts) {
+  const grid = document.getElementById('stat-grid');
+  const byKey = {};
+  Object.keys(counts).forEach(raw => {
+    const k = categoryKey(raw);
+    byKey[k] = (byKey[k] || 0) + counts[raw];
+  });
+  const boxes = COUNT_GROUP_KEYS.map(k => ({ label: k, num: byKey[k] || 0 }));
+  if (byKey['']) boxes.push({ label: CATEGORY_NONE_LABEL, num: byKey[''] });
+  grid.innerHTML = boxes.map(b =>
+    '<div class="stat-box" style="flex:1 1 calc(50% - 10px);min-width:130px;">' +
+      '<div class="num">' + b.num + '</div><div class="label">' + esc(b.label) + '</div></div>'
+  ).join('');
+}
+
 function loadDashboard() {
   gsRun('getDashboardSummary', TOKEN).then(sum => {
-    document.getElementById('stat-drugs').textContent = sum.totalDrugs;
-    document.getElementById('stat-units').textContent = sum.totalStockUnits;
+    if (sum.categoryCounts) {
+      renderCategoryCounts(sum.categoryCounts);
+    } else {
+      // Code.gs บน Apps Script ยังเป็นเวอร์ชันเก่า (ยังไม่ได้ Deploy เวอร์ชันใหม่)
+      document.getElementById('stat-grid').innerHTML =
+        '<div class="muted">ยังไม่มีข้อมูลแยกหมวดหมู่ — กรุณา Deploy Code.gs เวอร์ชันใหม่ใน Apps Script</div>';
+    }
 
-    const lowEl = document.getElementById('low-stock-list');
-    lowEl.innerHTML = sum.lowStock.length === 0
-      ? '<p class="muted">ไม่มีรายการสต็อกต่ำ</p>'
-      : sum.lowStock.map(d => `<div class="alert-item danger">${d.drugName}: คงเหลือ <b>${d.currentStock}</b> ${d.unit || ''} (ขั้นต่ำ ${d.minStock})</div>`).join('');
+    renderGroupedList('low-stock-list', sum.lowStock, 'ไม่มีรายการสต็อกต่ำ',
+      d => '<div class="alert-item danger">' + esc(d.drugName) + ': คงเหลือ <b>' + esc(d.currentStock) + '</b> ' +
+        esc(d.unit || '') + ' (ขั้นต่ำ ' + esc(d.minStock) + ')</div>');
 
-    const expEl = document.getElementById('near-expiry-list');
-    expEl.innerHTML = sum.nearExpiry.length === 0
-      ? '<p class="muted">ไม่มียาใกล้หมดอายุ</p>'
-      : sum.nearExpiry.map(d => `<div class="alert-item">${d.drugName}: หมดอายุ <b>${fmtDate(d.nearestExpiry)}</b></div>`).join('');
-
-    const exp6El = document.getElementById('near-expiry-6mo-list');
-    exp6El.innerHTML = sum.nearExpiry6Months.length === 0
-      ? '<p class="muted">ไม่มียาใกล้หมดอายุในช่วงนี้</p>'
-      : sum.nearExpiry6Months.map(d => `<div class="alert-item">${d.drugName}: หมดอายุ <b>${fmtDate(d.nearestExpiry)}</b></div>`).join('');
+    const expiryItem = d => '<div class="alert-item">' + esc(d.drugName) + ': หมดอายุ <b>' + fmtDate(d.nearestExpiry) + '</b></div>';
+    renderGroupedList('near-expiry-list', sum.nearExpiry, 'ไม่มียาใกล้หมดอายุ', expiryItem);
+    renderGroupedList('near-expiry-6mo-list', sum.nearExpiry6Months, 'ไม่มียาใกล้หมดอายุในช่วงนี้', expiryItem);
   }).catch(err => toast(err.message, true));
 }
 
