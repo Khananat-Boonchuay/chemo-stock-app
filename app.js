@@ -1,6 +1,6 @@
 /* ============================ ตั้งค่า URL ของ Apps Script API ============================ */
 // นำ URL เว็บแอปที่ได้จากการ Deploy Apps Script (ลงท้ายด้วย /exec) มาใส่ตรงนี้
-const API_URL = 'https://script.google.com/macros/s/AKfycbzr4Ij0kx0IeeUQjQ7B_Edsd5JdUAih6YEQL7en6hmqoIvBG0OdVv7_iKX6-YeSYGvb/exec';
+const API_URL = 'https://script.google.com/macros/s/XXXXXXXXXXXXXXXXXXXX/exec';
 
 /* ============================ STATE & HELPERS ============================ */
 let TOKEN = sessionStorage.getItem('token') || null;
@@ -31,6 +31,14 @@ function gsRun(fnName, ...args) {
         throw new Error('เซิร์ฟเวอร์ตอบกลับไม่ใช่ JSON (HTTP ' + status + ') เนื้อหา: ' + preview);
       }
       if (data && data.success) return data.result;
+      if (data && data.error === 'SESSION_EXPIRED') {
+        // session หมดอายุ หรือถูกตัด (เช่นถูกระงับบัญชี/เปลี่ยนสิทธิ์/เปลี่ยนรหัสผ่าน) → กลับไปหน้าเข้าสู่ระบบ
+        TOKEN = null;
+        sessionStorage.removeItem('token');
+        showLoginScreen();
+        document.getElementById('error-msg').textContent = 'หมดเวลาการใช้งาน กรุณาเข้าสู่ระบบใหม่';
+        throw new Error('กรุณาเข้าสู่ระบบใหม่');
+      }
       if (data && data.error) throw new Error(data.error);
       throw new Error('คำตอบจากเซิร์ฟเวอร์ไม่อยู่ในรูปแบบที่คาดไว้: ' + preview);
     });
@@ -230,6 +238,10 @@ function loadDashboard() {
 /* ============================== SCANNER (กล้อง) ============================== */
 
 async function openScanner(targetId) {
+  if (typeof Html5Qrcode === 'undefined') {
+    toast('ไม่พบไฟล์ html5-qrcode.min.js ในเว็บ — สแกนด้วยกล้องไม่ได้ (ใช้การพิมพ์หรือเครื่องอ่านบาร์โค้ดแทนได้)', true);
+    return;
+  }
   scannerTargetId = targetId;
   document.getElementById('scanner-modal').style.display = 'block';
   html5QrCode = new Html5Qrcode('reader');
@@ -270,8 +282,8 @@ function onScanSuccess(decodedText) {
   const cleaned = parseBarcodeValue(decodedText);
   document.getElementById(scannerTargetId).value = cleaned;
   closeScanner();
-  if (scannerTargetId === 'receive-barcode') lookupReceiveDrug();
-  if (scannerTargetId === 'dispense-barcode') lookupDispenseDrug();
+  if (scannerTargetId === 'receive-barcode') { document.getElementById('receive-suggest').innerHTML = ''; lookupReceiveDrug(); }
+  if (scannerTargetId === 'dispense-barcode') { document.getElementById('dispense-suggest').innerHTML = ''; lookupDispenseDrug(); }
 }
 
 // รองรับกรณีบาร์โค้ด GS1-128 ที่มี Application Identifier (01=GTIN) นำหน้า — ตัดให้เหลือรหัสสำหรับค้นหา
@@ -287,52 +299,150 @@ function closeScanner() {
   }
 }
 
+/* ===================== ค้นหายาจากชื่อ (หน้ารับเข้า / จ่ายออก) ===================== */
+
+const SUGGEST_MAX = 10;
+let searchDrugs = [];                              // รายการยาทั้งหมด โหลดมาค้นหาในเบราว์เซอร์
+let suggestMatches = { receive: [], dispense: [] };
+const lookupSeq = { receive: 0, dispense: 0 };     // กันผลค้นหาเก่ามาทับเมื่อผู้ใช้พิมพ์ค้นใหม่
+let pendingAddCode = '';                           // ข้อความที่ค้นแล้วไม่พบ (ใช้ตอนกด "เพิ่มยานี้เข้าระบบ")
+
+function loadSearchDrugs() {
+  gsRun('getDrugList', TOKEN).then(drugs => { searchDrugs = drugs; }).catch(() => {});
+}
+
+function normalizeText(s) {
+  return String(s == null ? '' : s).normalize('NFC').toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+// ค้นจากชื่อยา: พิมพ์บางคำก็เจอ, พิมพ์หลายคำคั่นด้วยเว้นวรรคได้ (ต้องมีครบทุกคำ), ไม่สนตัวพิมพ์เล็ก/ใหญ่
+function searchDrugsByName(query) {
+  const tokens = normalizeText(query).split(' ').filter(Boolean);
+  if (tokens.length === 0) return [];
+  const startsWithFirst = d => (normalizeText(d.drugName).startsWith(tokens[0]) ? 0 : 1);
+  return searchDrugs
+    .filter(d => { const name = normalizeText(d.drugName); return tokens.every(t => name.includes(t)); })
+    .sort((a, b) => startsWithFirst(a) - startsWithFirst(b)); // ชื่อที่ขึ้นต้นด้วยคำที่พิมพ์ มาก่อน
+}
+
+function onDrugSearchInput(kind) {
+  // พิมพ์ค้นใหม่ → ล้างยาที่เลือกไว้เดิม ป้องกันบันทึกรับ/จ่ายผิดตัว
+  if (kind === 'receive') clearReceiveSelection(); else clearDispenseSelection();
+  renderDrugSuggestions(kind);
+}
+
+function renderDrugSuggestions(kind) {
+  const box = document.getElementById(kind + '-suggest');
+  const q = document.getElementById(kind + '-barcode').value;
+  if (!normalizeText(q)) { suggestMatches[kind] = []; box.innerHTML = ''; return; }
+  const hits = searchDrugsByName(q);
+  suggestMatches[kind] = hits.slice(0, SUGGEST_MAX);
+  if (hits.length === 0) {
+    box.innerHTML = '<p class="muted">ไม่พบชื่อยาที่ตรงกัน — หากเป็นบาร์โค้ดหรือรหัสยา ให้กด Enter เพื่อค้นหา</p>';
+    return;
+  }
+  box.innerHTML = suggestMatches[kind].map((d, i) => {
+    const cat = categoryKey(d.category);
+    return `<div class="lot-pick" onclick="pickDrugSuggestion('${kind}', ${i})">
+      <span><b>${esc(d.drugName)}</b><br><span class="muted">รหัส ${esc(d.drugCode)}${cat ? ' · ' + esc(cat) : ''}</span></span>
+      <span class="stock-pill ${d.currentStock <= d.minStock ? 'low' : 'ok'}">${esc(d.currentStock)} ${esc(d.unit || '')}</span>
+    </div>`;
+  }).join('') + (hits.length > SUGGEST_MAX
+    ? `<p class="muted">แสดง ${SUGGEST_MAX} จาก ${hits.length} รายการ — พิมพ์เพิ่มเพื่อกรองให้แคบลง</p>` : '');
+}
+
+function pickDrugSuggestion(kind, i) {
+  const d = suggestMatches[kind][i];
+  if (d) selectDrug(kind, d);
+}
+
+function selectDrug(kind, d) {
+  document.getElementById(kind + '-barcode').value = d.drugName;
+  document.getElementById(kind + '-suggest').innerHTML = '';
+  suggestMatches[kind] = [];
+  if (kind === 'receive') lookupReceiveDrug(d.drugCode); else lookupDispenseDrug(d.drugCode);
+}
+
+// กด Enter ในช่องค้นหา (รวมถึงเครื่องอ่านบาร์โค้ดที่ส่ง Enter ต่อท้าย)
+function handleSearchEnter(kind) {
+  const raw = document.getElementById(kind + '-barcode').value.trim();
+  if (!raw) return;
+  const q = normalizeText(raw);
+  // 1) ตรงกับรหัสยา/บาร์โค้ดเป๊ะ (สแกน หรือพิมพ์รหัสครบ)
+  const exact = searchDrugs.find(d => normalizeText(d.drugCode) === q || (d.barcode && normalizeText(d.barcode) === q));
+  if (exact) { selectDrug(kind, exact); return; }
+  // 2) ค้นจากชื่อ: เหลือรายการเดียว หรือชื่อตรงเป๊ะรายการเดียว → เลือกให้เลย
+  const hits = searchDrugsByName(raw);
+  if (hits.length === 1) { selectDrug(kind, hits[0]); return; }
+  const sameName = hits.filter(d => normalizeText(d.drugName) === q);
+  if (sameName.length === 1) { selectDrug(kind, sameName[0]); return; }
+  if (hits.length > 1) { toast('พบหลายรายการ กรุณาแตะเลือกยาจากรายการ', false); return; }
+  // 3) ไม่พบในรายการที่โหลดไว้ → ให้เซิร์ฟเวอร์ค้นด้วยบาร์โค้ด/รหัสยา (เผื่อรายการยาเพิ่งถูกเพิ่ม)
+  document.getElementById(kind + '-suggest').innerHTML = '';
+  if (kind === 'receive') lookupReceiveDrug(); else lookupDispenseDrug();
+}
+
 /* ============================== รับเข้า ============================== */
+
+function clearReceiveSelection() {
+  lookupSeq.receive++;
+  document.getElementById('receive-drug-info').innerHTML = '';
+  document.getElementById('receive-form').classList.add('hidden');
+  ['receive-lot', 'receive-expiry', 'receive-qty', 'receive-note'].forEach(id => { document.getElementById(id).value = ''; });
+  currentReceiveDrug = null;
+}
 
 function resetReceiveForm() {
   document.getElementById('receive-barcode').value = '';
-  document.getElementById('receive-drug-info').innerHTML = '';
-  document.getElementById('receive-form').classList.add('hidden');
-  document.getElementById('receive-lot').value = '';
-  document.getElementById('receive-expiry').value = '';
-  document.getElementById('receive-qty').value = '';
-  document.getElementById('receive-note').value = '';
-  currentReceiveDrug = null;
+  document.getElementById('receive-suggest').innerHTML = '';
+  suggestMatches.receive = [];
+  clearReceiveSelection();
+  loadSearchDrugs();
   setTimeout(() => document.getElementById('receive-barcode').focus(), 100);
 }
 
 document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('receive-barcode').addEventListener('keydown', e => {
-    if (e.key === 'Enter') { e.preventDefault(); lookupReceiveDrug(); }
+    if (e.key === 'Enter') { e.preventDefault(); handleSearchEnter('receive'); }
   });
   document.getElementById('dispense-barcode').addEventListener('keydown', e => {
-    if (e.key === 'Enter') { e.preventDefault(); lookupDispenseDrug(); }
+    if (e.key === 'Enter') { e.preventDefault(); handleSearchEnter('dispense'); }
   });
+  // จำว่าฟอร์มเพิ่ม/แก้ไขยามีข้อมูลที่ยังไม่ได้บันทึกหรือไม่ (ไว้เตือนก่อนปิด)
+  const drugForm = document.getElementById('drug-form-card');
+  ['input', 'change'].forEach(ev => drugForm.addEventListener(ev, () => { drugFormDirty = true; }));
 });
 
-function lookupReceiveDrug() {
-  const code = document.getElementById('receive-barcode').value.trim();
+function lookupReceiveDrug(codeOverride) {
+  const code = (codeOverride != null ? String(codeOverride) : document.getElementById('receive-barcode').value).trim();
   if (!code) return;
+  const seq = ++lookupSeq.receive;
   gsRun('getDrugByBarcode', TOKEN, code).then(res => {
+    if (seq !== lookupSeq.receive) return; // ผู้ใช้พิมพ์ค้นใหม่แล้ว ทิ้งผลเก่า
     const infoEl = document.getElementById('receive-drug-info');
     if (res.found) {
       currentReceiveDrug = res;
-      infoEl.innerHTML = `<div class="drug-info-box"><span class="name">${res.drugName}</span><br>รหัส: ${res.drugCode} · หน่วย: ${res.unit || '-'}</div>`;
+      infoEl.innerHTML = `<div class="drug-info-box"><span class="name">${esc(res.drugName)}</span><br>รหัส: ${esc(res.drugCode)} · หน่วย: ${esc(res.unit || '-')}</div>`;
       document.getElementById('receive-form').classList.remove('hidden');
       document.getElementById('receive-lot').focus();
     } else {
       currentReceiveDrug = null;
+      pendingAddCode = res.scannedCode;
       document.getElementById('receive-form').classList.add('hidden');
-      infoEl.innerHTML = `<div class="alert-item danger">ไม่พบยานี้ในระบบ (รหัส: ${res.scannedCode})
-        ${canManageDrugs() ? `<br><button class="btn-small btn-primary" style="margin-top:6px;" onclick="goAddDrugFromCode('${res.scannedCode}')">+ เพิ่มยานี้เข้าระบบ</button>` : ''}</div>`;
+      infoEl.innerHTML = `<div class="alert-item danger">ไม่พบยา "${esc(res.scannedCode)}" ในระบบ
+        ${canManageDrugs() ? `<br><button class="btn-small btn-primary" style="margin-top:6px;" onclick="goAddDrugFromCode()">+ เพิ่มยานี้เข้าระบบ</button>` : ''}</div>`;
     }
   }).catch(err => toast(err.message, true));
 }
 
-function goAddDrugFromCode(code) {
+// ข้อความที่ค้นแล้วไม่พบ: ถ้าหน้าตาเป็นบาร์โค้ด (มีตัวเลข ไม่มีเว้นวรรค) ใส่ช่องบาร์โค้ด ไม่งั้นใส่ช่องชื่อยา
+function looksLikeBarcode(text) { return /^(?=.*\d)[A-Za-z0-9\-_.\/]{4,}$/.test(text); }
+
+function goAddDrugFromCode() {
+  const text = pendingAddCode;
   showPage('drugs');
   openDrugForm();
-  document.getElementById('drug-barcode').value = code;
+  document.getElementById(looksLikeBarcode(text) ? 'drug-barcode' : 'drug-name').value = text;
 }
 
 function submitReceive() {
@@ -352,39 +462,47 @@ function submitReceive() {
 
 /* ============================== จ่ายออก ============================== */
 
-function resetDispenseForm() {
-  document.getElementById('dispense-barcode').value = '';
+function clearDispenseSelection() {
+  lookupSeq.dispense++;
   document.getElementById('dispense-drug-info').innerHTML = '';
   document.getElementById('dispense-form').classList.add('hidden');
   document.getElementById('dispense-lot-list').innerHTML = '';
-  document.getElementById('dispense-qty').value = '';
-  document.getElementById('dispense-patient').value = '';
-  document.getElementById('dispense-note').value = '';
+  ['dispense-qty', 'dispense-patient', 'dispense-note'].forEach(id => { document.getElementById(id).value = ''; });
   currentDispenseDrug = null;
   selectedLotIndex = 0;
+}
+
+function resetDispenseForm() {
+  document.getElementById('dispense-barcode').value = '';
+  document.getElementById('dispense-suggest').innerHTML = '';
+  suggestMatches.dispense = [];
+  clearDispenseSelection();
+  loadSearchDrugs();
   setTimeout(() => document.getElementById('dispense-barcode').focus(), 100);
 }
 
-function lookupDispenseDrug() {
-  const code = document.getElementById('dispense-barcode').value.trim();
+function lookupDispenseDrug(codeOverride) {
+  const code = (codeOverride != null ? String(codeOverride) : document.getElementById('dispense-barcode').value).trim();
   if (!code) return;
+  const seq = ++lookupSeq.dispense;
   gsRun('getDrugByBarcode', TOKEN, code).then(res => {
+    if (seq !== lookupSeq.dispense) return; // ผู้ใช้พิมพ์ค้นใหม่แล้ว ทิ้งผลเก่า
     const infoEl = document.getElementById('dispense-drug-info');
     if (!res.found) {
       currentDispenseDrug = null;
       document.getElementById('dispense-form').classList.add('hidden');
-      infoEl.innerHTML = `<div class="alert-item danger">ไม่พบยานี้ในระบบ (รหัส: ${res.scannedCode})</div>`;
+      infoEl.innerHTML = `<div class="alert-item danger">ไม่พบยา "${esc(res.scannedCode)}" ในระบบ</div>`;
       return;
     }
     if (res.lots.length === 0) {
       currentDispenseDrug = null;
       document.getElementById('dispense-form').classList.add('hidden');
-      infoEl.innerHTML = `<div class="drug-info-box"><span class="name">${res.drugName}</span></div><div class="alert-item danger">ไม่มีสต็อกคงเหลือของยานี้</div>`;
+      infoEl.innerHTML = `<div class="drug-info-box"><span class="name">${esc(res.drugName)}</span></div><div class="alert-item danger">ไม่มีสต็อกคงเหลือของยานี้</div>`;
       return;
     }
     currentDispenseDrug = res;
     selectedLotIndex = 0;
-    infoEl.innerHTML = `<div class="drug-info-box"><span class="name">${res.drugName}</span><br>รหัส: ${res.drugCode} · หน่วย: ${res.unit || '-'}</div>`;
+    infoEl.innerHTML = `<div class="drug-info-box"><span class="name">${esc(res.drugName)}</span><br>รหัส: ${esc(res.drugCode)} · หน่วย: ${esc(res.unit || '-')}</div>`;
     renderLotPicker();
     document.getElementById('dispense-form').classList.remove('hidden');
     document.getElementById('dispense-qty').focus();
@@ -395,8 +513,8 @@ function renderLotPicker() {
   const el = document.getElementById('dispense-lot-list');
   el.innerHTML = currentDispenseDrug.lots.map((l, i) => `
     <div class="lot-pick ${i === selectedLotIndex ? 'selected' : ''}" onclick="selectLot(${i})">
-      <span>Lot ${l.lotNumber}</span>
-      <span>คงเหลือ ${l.qty} · หมดอายุ ${fmtDate(l.expiryDate)}</span>
+      <span>Lot ${esc(l.lotNumber)}</span>
+      <span>คงเหลือ ${esc(l.qty)} · หมดอายุ ${fmtDate(l.expiryDate)}</span>
     </div>`).join('');
 }
 
@@ -439,15 +557,27 @@ function renderDrugList() {
     return `
       <div class="drug-list-item" ${canManageDrugs() ? `onclick="openDrugForm(${i})" style="cursor:pointer;"` : ''}>
         <div>
-          <div><b>${d.drugName}</b></div>
-          <div class="meta">รหัส ${d.drugCode} ${d.barcode ? '· บาร์โค้ด ' + d.barcode : ''}${d.category ? '<br>' + d.category : ''}</div>
+          <div><b>${esc(d.drugName)}</b></div>
+          <div class="meta">รหัส ${esc(d.drugCode)} ${d.barcode ? '· บาร์โค้ด ' + esc(d.barcode) : ''}${d.category ? '<br>' + esc(d.category) : ''}</div>
         </div>
-        <div class="stock-pill ${d.currentStock <= d.minStock ? 'low' : 'ok'}">${d.currentStock} ${d.unit || ''}</div>
+        <div class="stock-pill ${d.currentStock <= d.minStock ? 'low' : 'ok'}">${esc(d.currentStock)} ${esc(d.unit || '')}</div>
       </div>`;
   }).join('');
 }
 
+let drugFormDirty = false; // มีข้อมูลในฟอร์มที่ยังไม่ได้บันทึก
+
+// ถ้ามีข้อมูลที่ยังไม่ได้บันทึกค้างอยู่ ให้ถามก่อนทิ้ง (คืน true = ทำต่อได้)
+function confirmDiscardDrugForm() {
+  const isOpen = !document.getElementById('drug-form-card').classList.contains('hidden');
+  if (isOpen && drugFormDirty) {
+    return confirm('ยังมีข้อมูลที่ยังไม่ได้บันทึก ต้องการทิ้งข้อมูลนี้หรือไม่?');
+  }
+  return true;
+}
+
 function openDrugForm(index) {
+  if (!confirmDiscardDrugForm()) return;
   document.getElementById('drug-form-card').classList.remove('hidden');
   const codeInput = document.getElementById('drug-code');
   if (typeof index === 'number') {
@@ -464,11 +594,19 @@ function openDrugForm(index) {
     ['drug-code', 'drug-barcode', 'drug-name', 'drug-unit', 'drug-min', 'drug-category'].forEach(id => document.getElementById(id).value = '');
     codeInput.disabled = false;
   }
+  drugFormDirty = false;
+  window.scrollTo({ top: 0, behavior: 'smooth' }); // ฟอร์มอยู่ด้านบนสุดของหน้า
 }
 
-function closeDrugForm() { document.getElementById('drug-form-card').classList.add('hidden'); }
+// ปุ่ม "เสร็จสิ้น": ปิดฟอร์ม (ถ้ายังมีข้อมูลที่ไม่ได้บันทึกจะถามก่อน)
+function closeDrugForm() {
+  if (!confirmDiscardDrugForm()) return;
+  drugFormDirty = false;
+  document.getElementById('drug-form-card').classList.add('hidden');
+}
 
 function submitDrug() {
+  const isEdit = document.getElementById('drug-code').disabled; // โหมดแก้ไข: ช่องรหัสยาถูกล็อก
   const payload = {
     drugCode: document.getElementById('drug-code').value.trim(),
     barcode: document.getElementById('drug-barcode').value.trim(),
@@ -478,9 +616,14 @@ function submitDrug() {
     category: document.getElementById('drug-category').value.trim()
   };
   gsRun('saveDrug', TOKEN, payload).then(res => {
-    toast(res.message, false);
-    closeDrugForm();
+    toast(res.message + ' — ' + payload.drugName, false);
     loadDrugList();
+    drugFormDirty = false;
+    if (!isEdit) {
+      // ฟอร์มยังเปิดอยู่ ล้างช่องเพื่อเพิ่มยาตัวถัดไป (กด "เสร็จสิ้น" เมื่อเพิ่มครบแล้ว)
+      openDrugForm();
+      document.getElementById('drug-code').focus();
+    }
   }).catch(err => toast(err.message, true));
 }
 
@@ -609,8 +752,8 @@ function loadUsers() {
     const el = document.getElementById('user-list');
     el.innerHTML = users.map((u, i) => `
       <div class="drug-list-item" onclick="openUserForm(${i})" style="cursor:pointer;">
-        <div><b>${u.fullName}</b><div class="meta">${u.username} · ${roleLabel(u.role)}</div></div>
-        <div class="stock-pill ${u.active ? 'ok' : 'low'}">${u.active ? 'ใช้งาน' : 'ระงับ'}</div>
+        <div><b>${esc(u.fullName)}</b><div class="meta">${esc(u.username)} · ${esc(roleLabel(u.role))}</div></div>
+        <div class="stock-pill ${u.active && !u.locked ? 'ok' : 'low'}">${!u.active ? 'ระงับ' : (u.locked ? 'ล็อกชั่วคราว' : 'ใช้งาน')}</div>
       </div>`).join('');
   }).catch(err => toast(err.message, true));
 }
@@ -626,7 +769,9 @@ function openUserForm(index) {
     document.getElementById('user-role').value = u.role;
     document.getElementById('user-password').value = '';
     document.getElementById('user-active').checked = u.active;
+    document.getElementById('btn-unlock-user').classList.toggle('hidden', !u.locked);
   } else {
+    document.getElementById('btn-unlock-user').classList.add('hidden');
     document.getElementById('user-form-title').textContent = 'เพิ่มผู้ใช้ใหม่';
     unameInput.value = ''; unameInput.disabled = false;
     document.getElementById('user-fullname').value = '';
@@ -638,6 +783,15 @@ function openUserForm(index) {
 
 function closeUserForm() { document.getElementById('user-form-card').classList.add('hidden'); }
 
+function unlockSelectedUser() {
+  const username = document.getElementById('user-username').value;
+  gsRun('unlockUser', TOKEN, username).then(res => {
+    toast(res.message, false);
+    document.getElementById('btn-unlock-user').classList.add('hidden');
+    loadUsers();
+  }).catch(err => toast(err.message, true));
+}
+
 function submitUser() {
   const payload = {
     username: document.getElementById('user-username').value.trim(),
@@ -646,6 +800,7 @@ function submitUser() {
     password: document.getElementById('user-password').value,
     active: document.getElementById('user-active').checked
   };
+  if (payload.password && payload.password.length < 8) { toast('รหัสผ่านต้องมีอย่างน้อย 8 ตัวอักษร', true); return; }
   gsRun('saveUser', TOKEN, payload).then(res => {
     toast(res.message, false);
     closeUserForm();
@@ -672,6 +827,7 @@ function submitChangeOwnPassword() {
   const oldPw = document.getElementById('own-old-pw').value;
   const newPw = document.getElementById('own-new-pw').value;
   if (!oldPw || !newPw) { toast('กรุณากรอกรหัสผ่านให้ครบ', true); return; }
+  if (newPw.length < 8) { toast('รหัสผ่านใหม่ต้องมีอย่างน้อย 8 ตัวอักษร', true); return; }
   gsRun('changeOwnPassword', TOKEN, oldPw, newPw).then(res => {
     toast(res.message, false);
     document.getElementById('own-old-pw').value = '';

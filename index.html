@@ -5,7 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
   <title>ระบบจัดการสต็อกยาเคมีบำบัด</title>
   <link rel="stylesheet" href="style.css">
-  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+  <!-- ไลบรารีสแกนบาร์โค้ด: เก็บไฟล์ไว้ใน repo เดียวกัน (ไม่โหลดจากเว็บภายนอก) -->
+  <script src="html5-qrcode.min.js"></script>
 </head>
 <body>
 
@@ -62,9 +63,10 @@
       <div class="card">
         <h2>📥 บันทึกรับยาเข้าสต็อก</h2>
         <div class="scan-row">
-          <input id="receive-barcode" placeholder="สแกน / พิมพ์บาร์โค้ดหรือรหัสยา" autofocus>
+          <input id="receive-barcode" placeholder="พิมพ์ชื่อยาบางส่วน / สแกนบาร์โค้ด / รหัสยา" autocomplete="off" oninput="onDrugSearchInput('receive')" autofocus>
           <button onclick="openScanner('receive-barcode')">📷</button>
         </div>
+        <div id="receive-suggest"></div>
         <div id="receive-drug-info"></div>
 
         <div id="receive-form" class="hidden">
@@ -86,9 +88,10 @@
       <div class="card">
         <h2>📤 บันทึกจ่ายยาออก</h2>
         <div class="scan-row">
-          <input id="dispense-barcode" placeholder="สแกน / พิมพ์บาร์โค้ดหรือรหัสยา">
+          <input id="dispense-barcode" placeholder="พิมพ์ชื่อยาบางส่วน / สแกนบาร์โค้ด / รหัสยา" autocomplete="off" oninput="onDrugSearchInput('dispense')">
           <button onclick="openScanner('dispense-barcode')">📷</button>
         </div>
+        <div id="dispense-suggest"></div>
         <div id="dispense-drug-info"></div>
 
         <div id="dispense-form" class="hidden">
@@ -107,23 +110,6 @@
 
     <!-- ---------- รายการยา ---------- -->
     <div class="page" id="page-drugs">
-      <div class="card">
-        <div class="flex-between">
-          <h2>📋 รายการยาทั้งหมด</h2>
-          <button class="btn-small btn-primary" id="btn-add-drug" onclick="openDrugForm()">+ เพิ่มยา</button>
-        </div>
-        <select id="drug-category-filter" onchange="renderDrugList()" style="width:auto;margin-bottom:10px;">
-          <option value="">ทุกหมวดหมู่</option>
-          <option value="ยาเคมีบำบัด (Chemotherapy)">ยาเคมีบำบัด (Chemotherapy)</option>
-          <option value="ยามุ่งเป้า (Targeted therapy)">ยามุ่งเป้า (Targeted therapy)</option>
-          <option value="ยาภูมิคุ้มกันบำบัด (Immunotherapy)">ยาภูมิคุ้มกันบำบัด (Immunotherapy)</option>
-          <option value="ยาอื่นๆ (ไม่ใช่ยาเคมีบำบัด)">ยาอื่นๆ (ไม่ใช่ยาเคมีบำบัด)</option>
-          <option value="สารน้ำ">สารน้ำ</option>
-          <option value="เวชภัณฑ์มิใช่ยา">เวชภัณฑ์มิใช่ยา</option>
-        </select>
-        <div id="drug-list" class="loading">กำลังโหลด...</div>
-      </div>
-
       <div class="card hidden" id="drug-form-card">
         <h2 id="drug-form-title">เพิ่มยาใหม่</h2>
         <label>รหัสยา (DrugCode) *ไม่สามารถแก้ไขภายหลัง</label>
@@ -147,7 +133,24 @@
           <option value="เวชภัณฑ์มิใช่ยา">เวชภัณฑ์มิใช่ยา</option>
         </select>
         <button class="btn-primary" onclick="submitDrug()">บันทึก</button>
-        <button class="btn-secondary" onclick="closeDrugForm()" style="margin-top:8px;">ยกเลิก</button>
+        <button class="btn-secondary" onclick="closeDrugForm()" style="margin-top:8px;">เสร็จสิ้น</button>
+      </div>
+
+      <div class="card">
+        <div class="flex-between">
+          <h2>📋 รายการยาทั้งหมด</h2>
+          <button class="btn-small btn-primary" id="btn-add-drug" onclick="openDrugForm()">+ เพิ่มยา</button>
+        </div>
+        <select id="drug-category-filter" onchange="renderDrugList()" style="width:auto;margin-bottom:10px;">
+          <option value="">ทุกหมวดหมู่</option>
+          <option value="ยาเคมีบำบัด (Chemotherapy)">ยาเคมีบำบัด (Chemotherapy)</option>
+          <option value="ยามุ่งเป้า (Targeted therapy)">ยามุ่งเป้า (Targeted therapy)</option>
+          <option value="ยาภูมิคุ้มกันบำบัด (Immunotherapy)">ยาภูมิคุ้มกันบำบัด (Immunotherapy)</option>
+          <option value="ยาอื่นๆ (ไม่ใช่ยาเคมีบำบัด)">ยาอื่นๆ (ไม่ใช่ยาเคมีบำบัด)</option>
+          <option value="สารน้ำ">สารน้ำ</option>
+          <option value="เวชภัณฑ์มิใช่ยา">เวชภัณฑ์มิใช่ยา</option>
+        </select>
+        <div id="drug-list" class="loading">กำลังโหลด...</div>
       </div>
     </div>
 
@@ -221,10 +224,11 @@
             <option value="STAFF">เจ้าหน้าที่ (รับ/จ่ายเท่านั้น)</option>
             <option value="ADMIN">ผู้ดูแลระบบ</option>
           </select>
-          <label>รหัสผ่าน (เว้นว่างหากไม่เปลี่ยน)</label>
+          <label>รหัสผ่าน (อย่างน้อย 8 ตัวอักษร — เว้นว่างหากไม่เปลี่ยน)</label>
           <input id="user-password" type="password">
           <label style="display:flex;align-items:center;gap:8px;"><input type="checkbox" id="user-active" style="width:auto;margin:0;" checked> เปิดใช้งานบัญชีนี้</label>
           <button class="btn-primary" onclick="submitUser()">บันทึก</button>
+          <button class="btn-secondary hidden" id="btn-unlock-user" onclick="unlockSelectedUser()" style="margin-top:8px;">🔓 ปลดล็อกบัญชี (ถูกล็อกจากการใส่รหัสผิด)</button>
           <button class="btn-secondary" onclick="closeUserForm()" style="margin-top:8px;">ยกเลิก</button>
         </div>
 
@@ -242,7 +246,7 @@
         <h2>🔑 เปลี่ยนรหัสผ่านของฉัน</h2>
         <label>รหัสผ่านเดิม</label>
         <input id="own-old-pw" type="password">
-        <label>รหัสผ่านใหม่</label>
+        <label>รหัสผ่านใหม่ (อย่างน้อย 8 ตัวอักษร)</label>
         <input id="own-new-pw" type="password">
         <button class="btn-primary" onclick="submitChangeOwnPassword()">เปลี่ยนรหัสผ่าน</button>
       </div>
