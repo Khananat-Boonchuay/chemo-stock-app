@@ -660,6 +660,10 @@ function getReportRange() {
   else if (period === '7d') from = new Date(y, m, d - 6);
   else if (period === '30d') from = new Date(y, m, d - 29);
   else if (period === 'month') from = new Date(y, m, 1);
+  else if (period === 'day') {
+    const v = document.getElementById('report-day').value;
+    if (v) { from = new Date(v + 'T00:00:00'); to = new Date(v + 'T23:59:59.999'); }
+  }
   else if (period === 'custom') {
     const f = document.getElementById('report-from').value;
     const t = document.getElementById('report-to').value;
@@ -670,8 +674,13 @@ function getReportRange() {
 }
 
 function onReportPeriodChange() {
-  const isCustom = document.getElementById('report-period').value === 'custom';
+  const period = document.getElementById('report-period').value;
+  const isCustom = period === 'custom';
   document.getElementById('report-custom-range').classList.toggle('hidden', !isCustom);
+  document.getElementById('report-day-wrap').classList.toggle('hidden', period !== 'day');
+  if (period === 'day' && !document.getElementById('report-day').value) {
+    document.getElementById('report-day').value = toDateInputValue(new Date()); // ค่าเริ่มต้น = วันนี้
+  }
   const hasDates = document.getElementById('report-from').value || document.getElementById('report-to').value;
   // เลือก "กำหนดเอง" ครั้งแรกให้รอผู้ใช้เลือกวันที่ก่อนค่อยโหลด
   if (!isCustom || hasDates) loadTransactions();
@@ -684,6 +693,8 @@ function resetReportFilters() {
   document.getElementById('report-from').value = '';
   document.getElementById('report-to').value = '';
   document.getElementById('report-custom-range').classList.add('hidden');
+  document.getElementById('report-day').value = '';
+  document.getElementById('report-day-wrap').classList.add('hidden');
   loadTransactions();
 }
 
@@ -740,6 +751,171 @@ function loadTransactions() {
     el.innerHTML = '';
     toast(err.message, true);
   });
+}
+
+/* ============================== พิมพ์รายงาน A4 ============================== */
+
+const pad2 = n => (n < 10 ? '0' : '') + n;
+function toDateInputValue(d) { return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); }
+// วันที่แบบ DD/MM/YYYY (พ.ศ.)
+function fmtThaiDate(v) { const d = new Date(v); return pad2(d.getDate()) + '/' + pad2(d.getMonth() + 1) + '/' + (d.getFullYear() + 543); }
+function fmtTime(v) { const d = new Date(v); return pad2(d.getHours()) + ':' + pad2(d.getMinutes()); }
+
+// ใส่เนื้อหาลงพื้นที่พิมพ์แล้วเปิดหน้าต่างพิมพ์ (ตั้งชื่อเอกสาร = ชื่อไฟล์เมื่อบันทึกเป็น PDF)
+function printHtml(html, docTitle) {
+  document.getElementById('print-area').innerHTML = html;
+  const oldTitle = document.title;
+  document.title = docTitle;
+  window.addEventListener('afterprint', () => { document.title = oldTitle; }, { once: true });
+  setTimeout(() => window.print(), 50);
+}
+
+function printedByLine() {
+  const now = new Date();
+  return 'พิมพ์โดย: ' + esc(FULLNAME || '-') + ' · ' + fmtThaiDate(now) + ' ' + fmtTime(now) + ' น.';
+}
+
+const SIGN_BLOCK = '<div class="pr-sign"><div>ลงชื่อ ................................................ ผู้จัดทำ<br><br>(................................................)</div>' +
+  '<div>ลงชื่อ ................................................ ผู้ตรวจสอบ<br><br>(................................................)</div></div>';
+
+/* ---------- 1) สรุปรายการยา (หน้ารายการยา) ---------- */
+
+const PRINT_DRUG_GROUPS = {
+  all: { label: 'ทุกหมวดหมู่', keys: null },
+  drugs: { label: 'หมวดยา (ยาเคมีบำบัด, ยามุ่งเป้า, ยาภูมิคุ้มกันบำบัด, ยาอื่นๆ)', keys: ['ยาเคมีบำบัด', 'ยามุ่งเป้า', 'ยาภูมิคุ้มกันบำบัด', 'ยาอื่นๆ'] },
+  fluids: { label: 'สารน้ำ', keys: ['สารน้ำ'] },
+  supplies: { label: 'เวชภัณฑ์มิใช่ยา', keys: ['เวชภัณฑ์มิใช่ยา'] }
+};
+
+// หมายเหตุอัตโนมัติ: หมด / หมดอายุแล้ว / ใกล้หมดอายุ / สต็อกต่ำ (ช่องนี้ยังเขียนเพิ่มด้วยมือได้)
+function stockNote(drug, lot, isFirstRow) {
+  const notes = [];
+  if (!lot) notes.push('ไม่มีคงเหลือ');
+  else if (lot.expiryDate) {
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const days = Math.floor((new Date(lot.expiryDate) - today) / 86400000);
+    if (days < 0) notes.push('หมดอายุแล้ว');
+    else if (days <= 30) notes.push('ใกล้หมดอายุ (≤ 30 วัน)');
+  }
+  const total = drug.lots.reduce((s, l) => s + Number(l.qty || 0), 0);
+  if (isFirstRow && lot && total <= drug.minStock) notes.push('ต่ำกว่าขั้นต่ำ (' + drug.minStock + ')');
+  return notes.join(', ');
+}
+
+function buildDrugSummaryHtml(drugs, groupKey, printedAt) {
+  const g = PRINT_DRUG_GROUPS[groupKey] || PRINT_DRUG_GROUPS.all;
+  const list = g.keys ? drugs.filter(d => g.keys.indexOf(categoryKey(d.category)) >= 0) : drugs;
+  let no = 0;
+  const body = groupByCategory(list).map(gr =>
+    `<tr class="pr-group"><td colspan="6">${esc(gr.label)} (${gr.items.length} รายการ)</td></tr>` +
+    gr.items.map(d => {
+      no++;
+      const lots = d.lots.length ? d.lots : [null];
+      return lots.map((l, i) => '<tr>' +
+        (i === 0 ? `<td class="c" rowspan="${lots.length}">${no}</td><td rowspan="${lots.length}">${esc(d.drugName)}</td>` : '') +
+        `<td>${l ? esc(l.lotNumber) : '-'}</td>` +
+        `<td class="c">${l && l.expiryDate ? fmtThaiDate(l.expiryDate) : '-'}</td>` +
+        `<td class="r">${l ? esc(l.qty) : 0} ${esc(d.unit || '')}</td>` +
+        `<td>${esc(stockNote(d, l, i === 0))}</td></tr>`).join('');
+    }).join('')
+  ).join('');
+  return {
+    count: list.length,
+    html: `<div class="print-doc">
+      <h1>สรุปรายการยาวันที่ ${fmtThaiDate(printedAt)}</h1>
+      <div class="pr-meta"><span>หมวดหมู่: ${esc(g.label)} · ${list.length} รายการ</span><span>${printedByLine()}</span></div>
+      <table><thead><tr>
+        <th style="width:7%">ลำดับ</th><th>รายการ</th><th style="width:15%">Lot</th>
+        <th style="width:13%">วันหมดอายุ</th><th style="width:14%">จำนวนคงเหลือ</th><th style="width:20%">หมายเหตุ</th>
+      </tr></thead><tbody>${body}</tbody></table>
+      ${SIGN_BLOCK}
+    </div>`
+  };
+}
+
+function printDrugSummary() {
+  const groupKey = document.getElementById('print-drug-group').value;
+  toast('กำลังเตรียมรายงาน...', false);
+  gsRun('getStockReport', TOKEN).then(drugs => {
+    const now = new Date();
+    const doc = buildDrugSummaryHtml(drugs, groupKey, now);
+    if (doc.count === 0) { toast('ไม่มีรายการยาในหมวดที่เลือก', true); return; }
+    printHtml(doc.html, 'สรุปรายการยา_' + fmtThaiDate(now).replace(/\//g, '-'));
+  }).catch(err => toast(err.message, true));
+}
+
+/* ---------- 2) รายงานรับเข้า/จ่ายออก (หน้ารายงาน) ---------- */
+
+const PRINT_TX_LIMIT = 5000;
+
+function periodLabel(from, to) {
+  if (!from && !to) return 'ทั้งหมด';
+  const f = from ? fmtThaiDate(from) : null;
+  const t = fmtThaiDate(to || new Date());
+  if (f && f === t) return 'วันที่ ' + f;
+  return f ? 'ตั้งแต่วันที่ ' + f + ' ถึง ' + t : 'จนถึงวันที่ ' + t;
+}
+
+function buildTransactionsHtml(rowsNewestFirst, opts) {
+  const rows = rowsNewestFirst.slice().reverse(); // เรียงจากเก่าไปใหม่
+  const unitOf = code => (reportDrugMap[code] && reportDrugMap[code].unit) || '';
+  const title = { '': 'รายงานการรับเข้า–จ่ายออกยา', RECEIVE: 'รายงานการรับยาเข้าสต็อก', DISPENSE: 'รายงานการจ่ายยาออก' }[opts.type || ''];
+
+  const detail = rows.map((r, i) => {
+    const note = [r.patientRef ? 'HN ' + r.patientRef : '', r.note || ''].filter(Boolean).join(' · ');
+    return `<tr><td class="c">${i + 1}</td><td class="c">${fmtThaiDate(r.timestamp)}<br>${fmtTime(r.timestamp)}</td>
+      <td class="c">${r.type === 'RECEIVE' ? 'รับเข้า' : 'จ่ายออก'}</td><td>${esc(r.drugName)}</td><td>${esc(r.lotNumber)}</td>
+      <td class="c">${r.expiryDate ? fmtThaiDate(r.expiryDate) : '-'}</td><td class="r">${esc(r.qty)} ${esc(unitOf(r.drugCode))}</td>
+      <td>${esc(r.user)}</td><td>${esc(note)}</td></tr>`;
+  }).join('');
+
+  // สรุปรวมตามรายการยา
+  const byDrug = {};
+  rows.forEach(r => {
+    const k = String(r.drugCode);
+    const b = byDrug[k] = byDrug[k] || { name: r.drugName, unit: unitOf(r.drugCode), RECEIVE: 0, DISPENSE: 0 };
+    b[r.type] = (b[r.type] || 0) + Number(r.qty || 0);
+  });
+  const sumRows = Object.keys(byDrug).map(k => byDrug[k])
+    .sort((a, b) => String(a.name).localeCompare(String(b.name), 'th'))
+    .map((b, i) => `<tr><td class="c">${i + 1}</td><td>${esc(b.name)}</td>
+      ${opts.type !== 'DISPENSE' ? `<td class="r">${b.RECEIVE} ${esc(b.unit)}</td>` : ''}
+      ${opts.type !== 'RECEIVE' ? `<td class="r">${b.DISPENSE} ${esc(b.unit)}</td>` : ''}</tr>`).join('');
+
+  return `<div class="print-doc">
+    <h1>${title}</h1>
+    <div class="pr-sub">${esc(periodLabel(opts.from, opts.to))}</div>
+    <div class="pr-meta"><span>ยา: ${esc(opts.drugLabel)} · ${rows.length} รายการ</span><span>${printedByLine()}</span></div>
+    ${opts.truncated ? `<div class="pr-note">* แสดง ${PRINT_TX_LIMIT} รายการล่าสุดเท่านั้น กรุณาเลือกช่วงวันที่ให้แคบลงเพื่อให้ได้รายงานครบ</div>` : ''}
+    <table><thead><tr>
+      <th style="width:6%">ลำดับ</th><th style="width:11%">วันที่/เวลา</th><th style="width:8%">ประเภท</th><th>รายการ</th>
+      <th style="width:11%">Lot</th><th style="width:11%">วันหมดอายุ</th><th style="width:10%">จำนวน</th>
+      <th style="width:12%">ผู้บันทึก</th><th style="width:13%">หมายเหตุ</th>
+    </tr></thead><tbody>${detail}</tbody></table>
+    <h2>สรุปรวมตามรายการยา</h2>
+    <table><thead><tr><th style="width:8%">ลำดับ</th><th>รายการ</th>
+      ${opts.type !== 'DISPENSE' ? '<th style="width:20%">รับเข้ารวม</th>' : ''}
+      ${opts.type !== 'RECEIVE' ? '<th style="width:20%">จ่ายออกรวม</th>' : ''}
+    </tr></thead><tbody>${sumRows}</tbody></table>
+    ${SIGN_BLOCK}
+  </div>`;
+}
+
+function printTransactions() {
+  const drugCode = document.getElementById('report-drug').value;
+  const type = document.getElementById('report-filter').value;
+  const { from, to } = getReportRange();
+  if (from && to && from > to) { toast('วันที่เริ่มต้นต้องไม่เกินวันที่สิ้นสุด', true); return; }
+  const filters = { type, drugCode, limit: PRINT_TX_LIMIT };
+  if (from) filters.dateFrom = from.toISOString();
+  if (to) filters.dateTo = to.toISOString();
+  toast('กำลังเตรียมรายงาน...', false);
+  gsRun('getTransactions', TOKEN, filters).then(rows => {
+    if (rows.length === 0) { toast('ไม่พบรายการตามเงื่อนไขที่เลือก', true); return; }
+    const drugLabel = drugCode ? ((reportDrugMap[drugCode] && reportDrugMap[drugCode].drugName) || drugCode) : 'ยาทั้งหมด';
+    const html = buildTransactionsHtml(rows, { type, from, to, drugLabel, truncated: rows.length >= PRINT_TX_LIMIT });
+    printHtml(html, 'รายงานรับเข้า-จ่ายออก_' + periodLabel(from, to).replace(/\//g, '-').replace(/\s+/g, '_'));
+  }).catch(err => toast(err.message, true));
 }
 
 /* ============================== ผู้ใช้งาน (admin) ============================== */
