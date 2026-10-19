@@ -150,6 +150,15 @@
           <option value="สารน้ำ">สารน้ำ</option>
           <option value="เวชภัณฑ์มิใช่ยา">เวชภัณฑ์มิใช่ยา</option>
         </select>
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;border-top:1px solid var(--border);padding-top:10px;">
+          <select id="print-drug-group" style="flex:1;margin:0;" aria-label="หมวดที่จะพิมพ์">
+            <option value="all">พิมพ์: ทุกหมวดหมู่</option>
+            <option value="drugs">พิมพ์: หมวดยา (เคมีบำบัด, มุ่งเป้า, ภูมิคุ้มกันบำบัด, ยาอื่นๆ)</option>
+            <option value="fluids">พิมพ์: สารน้ำ</option>
+            <option value="supplies">พิมพ์: เวชภัณฑ์มิใช่ยา</option>
+          </select>
+          <button class="btn-small btn-secondary" onclick="printDrugSummary()" style="white-space:nowrap;">🖨️ พิมพ์ A4</button>
+        </div>
         <div id="drug-list" class="loading">กำลังโหลด...</div>
       </div>
     </div>
@@ -178,11 +187,17 @@
         <select id="report-period" onchange="onReportPeriodChange()">
           <option value="all">ทั้งหมด</option>
           <option value="today">วันนี้</option>
+          <option value="day">เลือกวันที่</option>
           <option value="7d">7 วันล่าสุด</option>
           <option value="30d">30 วันล่าสุด</option>
           <option value="month">เดือนนี้</option>
           <option value="custom">กำหนดเอง</option>
         </select>
+
+        <div id="report-day-wrap" class="hidden">
+          <label for="report-day">วันที่</label>
+          <input type="date" id="report-day" onchange="loadTransactions()">
+        </div>
 
         <div id="report-custom-range" class="hidden" style="display:flex;gap:8px;">
           <div style="flex:1;">
@@ -195,6 +210,7 @@
           </div>
         </div>
 
+        <button class="btn-secondary" onclick="printTransactions()" style="margin-bottom:10px;">🖨️ พิมพ์รายงานตามเงื่อนไขที่เลือก (A4)</button>
         <div id="report-summary" class="muted" style="margin-bottom:8px;"></div>
         <div id="tx-list" class="loading">กำลังโหลด...</div>
       </div>
@@ -271,6 +287,9 @@
   </div>
 
   <div class="toast" id="toast"></div>
+
+  <!-- พื้นที่สำหรับพิมพ์รายงาน A4 (ซ่อนบนหน้าจอ แสดงเฉพาะตอนพิมพ์) -->
+  <div id="print-area"></div>
 
   <script src="app.js"></script>
 </body>
